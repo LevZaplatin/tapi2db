@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Configuration;
 using System.Globalization;
+using System.Threading;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -26,7 +27,7 @@ namespace tapi2db
      * Description: Программный продукт для записи и последующей обработки событий на 
      *              мини-АТС ipLDK 300. Программа подключается к АТС по стандартному интерфейсу
      *              TAPI (Telephony Application Programming Interface) поверх tcp/ip.
-     *              Конфигруация подключения по интерфейсу TAPI указывается при устновке TSP драйвера.
+     *              Конфигурация подключения по интерфейсу TAPI указывается при установке TSP драйвера.
      * Date:        14.04.2016
      * Author:      Lev ICHI Zaplatin, dev@ichi.su
      * Version:     0.001
@@ -86,11 +87,7 @@ namespace tapi2db
                 {
                     Console.WriteLine("using\t\tMongoDB: yes");
                     Console.WriteLine(string.Format("\t\tMongoDB: {0}:{1}", config.Get("mongodb_server"), config.Get("mongodb_port")));
-                    mongoclient = new MongoClient(string.Format("mongodb://{0}:{1}", config.Get("mongodb_server"), config.Get("mongodb_port")));
-                    mongodb = mongoclient.GetDatabase("pbx_event");
-                    // Создаем нужные коллекция, они конечно и сами могут создаться при записи, но к сожалению без параметра Capped, позволяющего
-                    // отслеживать изменения в коллекциях
-                    mongodb.CreateCollection("line_all", new CreateCollectionOptions { Capped = true, MaxSize = 1024 * 1024 * 1024 });
+                    connect_mongodb();
                 }
                 else
                 {
@@ -160,6 +157,28 @@ namespace tapi2db
                 Console.WriteLine("________________________________________________________________________________");
             }
 
+        }
+
+        static void connect_mongodb()
+        {
+            int mongodb_reconnect = 0;
+            do
+            {
+                mongoclient = new MongoClient(string.Format("mongodb://{0}:{1}", config.Get("mongodb_server"), config.Get("mongodb_port")));
+                mongodb = mongoclient.GetDatabase("pbx_event");
+                // Создаем нужные коллекция, они конечно и сами могут создаться при записи, но к сожалению без параметра Capped, позволяющего
+                // отслеживать изменения в коллекциях
+                mongodb.CreateCollection("line_all", new CreateCollectionOptions { Capped = true, MaxSize = 1024 * 1024 * 1024 });
+                mongodb.GetCollection<BsonDocument>("line_all").Indexes.CreateOneAsync(
+                    Builders<BsonDocument>.IndexKeys.Ascending("expire"),
+                    new CreateIndexOptions { ExpireAfter = TimeSpan.FromHours(1) }
+                );
+                if (mongoclient.Cluster.Description.State == MongoDB.Driver.Core.Clusters.ClusterState.Disconnected )
+                {
+                    Console.WriteLine(string.Format("MongoDB\t\tConnect - fail #{0}",mongodb_reconnect++));
+                    Thread.Sleep(1);
+                }
+            } while (mongoclient.Cluster.Description.State == MongoDB.Driver.Core.Clusters.ClusterState.Disconnected);
         }
 
         static void line_NewCall(object sender, NewCallEventArgs e)
@@ -340,6 +359,10 @@ namespace tapi2db
 
         static void save_info_mongodb(BsonDocument document)
         {
+            if (mongoclient.Cluster.Description.State == MongoDB.Driver.Core.Clusters.ClusterState.Disconnected)
+            {
+                connect_mongodb();
+            }
             mongodb.GetCollection<BsonDocument>("line_all").InsertOneAsync(document);
         }
 
