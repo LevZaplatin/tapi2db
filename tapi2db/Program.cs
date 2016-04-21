@@ -164,19 +164,25 @@ namespace tapi2db
             int mongodb_reconnect = 0;
             do
             {
-                mongoclient = new MongoClient(string.Format("mongodb://{0}:{1}", config.Get("mongodb_server"), config.Get("mongodb_port")));
-                mongodb = mongoclient.GetDatabase("pbx_event");
-                // Создаем нужные коллекция, они конечно и сами могут создаться при записи, но к сожалению без параметра Capped, позволяющего
-                // отслеживать изменения в коллекциях
-                mongodb.CreateCollection("line_all", new CreateCollectionOptions { Capped = true, MaxSize = 1024 * 1024 * 1024 });
-                mongodb.GetCollection<BsonDocument>("line_all").Indexes.CreateOneAsync(
-                    Builders<BsonDocument>.IndexKeys.Ascending("expire"),
-                    new CreateIndexOptions { ExpireAfter = TimeSpan.FromHours(1) }
-                );
-                if (mongoclient.Cluster.Description.State == MongoDB.Driver.Core.Clusters.ClusterState.Disconnected )
+                try {
+                    mongoclient = new MongoClient(string.Format("mongodb://{0}:{1}", config.Get("mongodb_server"), config.Get("mongodb_port")));
+                    mongodb = mongoclient.GetDatabase("pbx_event");
+                    // Создаем нужные коллекция, они конечно и сами могут создаться при записи, но к сожалению без параметра Capped, позволяющего
+                    // отслеживать изменения в коллекциях
+                    mongodb.CreateCollection("line_all", new CreateCollectionOptions { Capped = true, MaxSize = 1024 * 1024 * 1024 });
+                    mongodb.GetCollection<BsonDocument>("line_all").Indexes.CreateOneAsync(
+                        Builders<BsonDocument>.IndexKeys.Ascending("expire"),
+                        new CreateIndexOptions { ExpireAfter = TimeSpan.FromMinutes(1) }
+                    );
+                } catch (SystemException e)
                 {
-                    Console.WriteLine(string.Format("MongoDB\t\tConnect - fail #{0}",mongodb_reconnect++));
-                    Thread.Sleep(1);
+                    if (mongoclient.Cluster.Description.State == MongoDB.Driver.Core.Clusters.ClusterState.Disconnected)
+                    {
+                        Console.WriteLine(string.Format("MongoDB\t\tConnect - fail #{0}", mongodb_reconnect++));
+                    } else
+                    {
+                        Console.WriteLine(string.Format("MongoDB\t\tConnect - error: {0}", e.Message));
+                    }
                 }
             } while (mongoclient.Cluster.Description.State == MongoDB.Driver.Core.Clusters.ClusterState.Disconnected);
         }
@@ -307,7 +313,8 @@ namespace tapi2db
             //
             document.Add("call_phone", Convert.ToInt64(e.Call.Address.Address));
             document.Add("line_name", e.Call.Line.Name);
-            document.Add("event_unixtime", UnixMiliTimeNow());
+            document.Add("event_unixmicrotime", UnixMiliTimeNow());
+            document.Add("event_unixtime", UnixTimeNow());
             document.Add("event_datetime", DateTime.Now.ToString());
 
             return document;
@@ -375,6 +382,12 @@ namespace tapi2db
         {
             double militime = DateTime.UtcNow.Subtract(new DateTime(1970, 1, 1)).TotalMilliseconds;
             return militime.ToString();
+        }
+
+        static int UnixTimeNow()
+        {
+            int militime = Convert.ToInt32(DateTime.UtcNow.Subtract(new DateTime(1970, 1, 1)).TotalSeconds);
+            return militime;
         }
 
     }
